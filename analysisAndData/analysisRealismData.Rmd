@@ -1,0 +1,330 @@
+---
+title: "analysisRealismData"
+output: html_document
+---
+
+# Load packages 
+```{r setup, echo=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("rstan")
+library("knitr")
+library("tidyverse")
+library("brms")
+library("emmeans")
+library("tidybayes")
+```
+
+## Settings
+```{r}
+theme_set(theme_classic() + 
+    theme(text = element_text(size = 18),
+    plot.title = element_text(hjust = 0.5)))
+
+opts_chunk$set(comment = "#>",
+               fig.show = "hold")
+
+options(dplyr.summarise.inform = F)
+```
+
+## Data Wrangling
+```{r}
+# IMPORT DATA & PREPROCESS
+# check out current working directory
+getwd()
+# select the desired file(s)
+# -they have been randomly reordered after the experiment for anonymization
+subj1.data = read.csv("anonData/realism_responses_17.csv", header = TRUE) %>% 
+  mutate(id = 1)
+subj2.data = read.csv("anonData/realism_responses_20.csv", header = TRUE) %>% 
+  mutate(id = 2)
+subj3.data = read.csv("anonData/realism_responses_23.csv", header = TRUE) %>% 
+  mutate(id = 3)
+subj4.data = read.csv("anonData/realism_responses_27.csv", header = TRUE) %>% 
+  mutate(id = 4)
+subj5.data = read.csv("anonData/realism_responses_28.csv", header = TRUE) %>% 
+  mutate(id = 5)
+subj6.data = read.csv("anonData/realism_responses_34.csv", header = TRUE) %>% 
+  mutate(id = 6)
+subj7.data = read.csv("anonData/realism_responses_36.csv", header = TRUE) %>% 
+  mutate(id = 7)
+subj8.data = read.csv("anonData/realism_responses_41.csv", header = TRUE) %>% 
+  mutate(id = 8)
+subj9.data = read.csv("anonData/realism_responses_44.csv", header = TRUE) %>% 
+  mutate(id = 9)
+subj10.data = read.csv("anonData/realism_responses_48.csv", header = TRUE) %>% 
+  mutate(id = 10)
+subj11.data = read.csv("anonData/realism_responses_52.csv", header = TRUE) %>% 
+  mutate(id = 11)
+subj12.data = read.csv("anonData/realism_responses_54.csv", header = TRUE) %>% 
+  mutate(id = 12)
+subj13.data = read.csv("anonData/realism_responses_55.csv", header = TRUE) %>% 
+  mutate(id = 13)
+subj14.data = read.csv("anonData/realism_responses_56.csv", header = TRUE) %>% 
+  mutate(id = 14)
+subj15.data = read.csv("anonData/realism_responses_57.csv", header = TRUE) %>% 
+  mutate(id = 15)
+subj16.data = read.csv("anonData/realism_responses_60.csv", header = TRUE) %>% 
+  mutate(id = 16)
+subj17.data = read.csv("anonData/realism_responses_62.csv", header = TRUE) %>% 
+  mutate(id = 17)
+subj18.data = read.csv("anonData/realism_responses_66.csv", header = TRUE) %>% 
+  mutate(id = 18)
+subj19.data = read.csv("anonData/realism_responses_69.csv", header = TRUE) %>% 
+  mutate(id = 19)
+subj20.data = read.csv("anonData/realism_responses_76.csv", header = TRUE) %>% 
+  mutate(id = 20)
+subj21.data = read.csv("anonData/realism_responses_77.csv", header = TRUE) %>% 
+  mutate(id = 21)
+subj22.data = read.csv("anonData/realism_responses_98.csv", header = TRUE) %>% 
+  mutate(id = 22)
+
+# group all of this into one set of data (combined with commas)
+responses.df = data.frame(rbind(subj1.data, subj2.data, subj3.data, subj4.data, 
+                             subj5.data, subj6.data, subj7.data, subj8.data, 
+                             subj9.data, subj10.data, subj11.data, subj12.data, 
+                             subj13.data, subj14.data, subj15.data, subj16.data, 
+                             subj17.data, subj18.data, subj19.data, subj20.data,
+                             subj21.data, subj22.data))
+# Fixes
+# (1) signals: how many sensory cues were present in any trial
+# (2) mismatch: see if sensory cues were matched/mismatched in realism (factor)
+# (3) realism: based upon the realism in each sensory cue (factor)
+# (4) cueInfo: based on realism in vision & other sensory cues (factor)
+# (5) for H4, conditionTest: group for hypothesis testing (factor)
+# (6) for H5, mismatchTest: group for hypothesis testing (factor)
+# (7) (factor) condition, audio, vibration, vision
+# (8) group by participant, condition, & offset to calculate causal average
+responses.df = responses.df %>%  
+  mutate(signals = ifelse(audio != 0 & vibration != 0, 3, 
+                          ifelse(audio != 0 | vibration != 0, 2, 1))) %>% 
+  mutate(mismatch = ifelse((condition < 10 & audio != 2 & vibration != 2) | 
+                           (condition > 9 & audio != 1 & vibration != 1), 
+                           "match", "mismatch")) %>% 
+  mutate(mismatch = factor(mismatch)) %>% 
+  mutate(realism = ifelse((vision == 1 & audio != 1 & vibration != 1), 
+                          "real", "unreal")) %>%  
+  mutate(realism = factor(realism)) %>% 
+  mutate(cueInfo = ifelse((vision == 1 & audio != 1 & vibration != 1), "real", 
+                   ifelse((vision == 0 & audio != 2 & vibration != 2), "unreal", 
+                   ifelse(vision == 0, "mix_unrealVision", "mix_realVision")))) %>% 
+  mutate(cueInfo = factor(cueInfo)) %>% 
+  mutate(conditionTest = ifelse(condition == 17, 1, 0)) %>% 
+  mutate(conditionTest = factor(conditionTest)) %>% 
+  mutate(mismatchTest = ifelse(condition == 9, "realisticVisionOnly",
+                        ifelse(condition > 9 & audio != 1 & vibration != 1, 
+                               "match",
+                        ifelse(condition < 10 & audio != 2 & vibration != 2, 
+                               "notIncluded", "mismatch")))) %>% 
+  mutate(mismatchTest = factor(mismatchTest)) %>% 
+  mutate(condition = factor(condition)) %>% mutate(audio = factor(audio)) %>% 
+  mutate(vibration = factor(vibration)) %>% mutate(vision = factor(vision)) %>% 
+  mutate(offset = factor(offset)) %>% 
+  ungroup() %>% group_by(id,condition,offset) %>% 
+  mutate(causalAverage = sum(response)/n())
+
+# Check Out the Data
+glimpse(responses.df)
+
+# For H5
+# here we only want to use a subset of data: realistic vision & mismatched
+match.df = responses.df %>% 
+  filter(vision == 1 & 
+        (mismatchTest == "realisticVisionOnly" | mismatchTest == "mismatch"))
+```
+
+## Hypotheses
+# H1 : Temporal Offset
+```{r}
+# Model 1: cause_judgment ~ 1 + offset + (1 + offset | participant)  
+brm.m.h1 = brm(formula = response ~ 1 + offset + (1 + offset | id),
+              data = responses.df,
+              seed = 1, iter = 1000,
+              file = "cache/brm.m.h1")
+
+hypothesis(brm.m.h1, hypothesis = "offset < 0")
+```
+
+# H2 : Number of Signals
+```{r}
+# Model 2: cause_judgment ~ 1 + number_of_signals * offset + 
+#                          (1 + number_of_signals * offset | participant) 
+brm.m.h2 = brm(formula = response ~ 1 + signals * offset + 
+               (1 + signals*offset | id),
+               data = responses.df,
+               seed = 1, iter = 1000,
+               file = "cache/brm.m.h2")
+
+loo(brm.m.h1, brm.m.h2)
+
+hypothesis(brm.m.h2, hypothesis = "signals > 0")
+```
+
+# H3 : Cue Realism
+```{r}
+# Model 3: cause_judgment ~ 1 + realism * offset + 
+#                          (1 + realism * offset | participant)
+brm.m.h3 = brm(formula = response ~ 1 + realism * offset + 
+               (1 + realism * offset | id),
+               data = responses.df,
+               seed = 1, iter = 1000,
+               file = "cache/brm.m.h3")
+
+loo(brm.m.h1, brm.m.h3)
+
+hypothesis(brm.m.h3, hypothesis = "0 > realismunreal")
+```
+
+# H4 : Condition
+```{r}
+# Model 4: cause_judgment ~ 1 + condition + (1 + condition | participant)
+brm.m.h4 = brm(formula = response ~ 1 + conditionTest + (1 + conditionTest|id),
+              data = responses.df,
+              seed = 1, iter = 1000,
+              file = "cache/brm.m.h4")
+
+pairs(emmeans(brm.m.h4, "conditionTest"), reverse = TRUE)
+```
+
+# H5 : Mismatch
+```{r}
+# Model 5: cause_judgment ~ 1 + realVisionOnly_or_mismatch + 
+#                          (1 + realVisionOnly_or_mismatch | participant)
+brm.m.h5 = brm(formula = response ~ 1 + mismatchTest + (1 + mismatchTest | id),
+              data = match.df,
+              seed = 1, iter = 1000,
+              file = "cache/brm.m.h5")
+
+pairs(emmeans(brm.m.h5, "mismatchTest"))
+```
+
+# Exploratory
+```{r}
+brm.m.extra.0 = brm(formula = response ~ 1 + audio + vibration + vision + 
+                    (1 + audio + vibration + vision | id),
+                    data = responses.df,
+                    seed = 1, iter = 1000,
+                    file = "cache/brm.m.extra.0")
+brm.m.extra.0.int = brm(formula = response ~ 1 + audio + vibration * vision + 
+                        (1 + audio + vibration * vision | id),
+                        data = responses.df,
+                        seed = 1, iter = 1000,
+                        file = "cache/brm.m.extra.0.int")
+
+loo(brm.m.extra.0, brm.m.extra.0.int)
+
+pairs(emmeans(brm.m.extra.0.int, "audio"), reverse = TRUE)
+emmeans(brm.m.extra.0.int, pairwise ~ vibration | vision, reversed = TRUE)
+```
+
+## Color Palettes & Labels
+```{r}
+## Colors
+cbPurple1 = "#C9C1FA"
+cbPurple2 = "#785EF0"
+cbPurple3 = "#4734BC"
+signalPalette = c(cbPurple1, cbPurple2, cbPurple3)
+
+newLightGreen = "#A6D12E"
+newBlue = "#349CE9"
+realismPalette = c(newLightGreen, newBlue)
+
+newOrange = "#C85215"
+newBlue = "#349CE9"
+explorePalette = c(newOrange, newLightGreen, newBlue)
+
+## Labels
+offset.labs <- c("0 ms", "100 ms", "200 ms", "300 ms", "400 ms")
+names(offset.labs) <- c("0", "100", "200", "300", "400")
+
+vision.labs <- c("Vision: Unreal", "Vision: Real")
+names(vision.labs) <- c("0", "1")
+
+audio.labs <- c("Audio: None", "Audio: Unreal", "Audio: Real")
+names(audio.labs) <- c("0", "1", "2")
+```
+
+## Graphed Results
+```{r}
+# Number of Signals
+signal.plot = ggplot(data = responses.df,
+                     mapping = aes(x = factor(signals), y = response, 
+                                   color = factor(signals), 
+                                   fill = factor(signals))) +
+  # color
+  scale_colour_manual(values = signalPalette) +
+  scale_fill_manual(values = signalPalette)  +
+  # facet by offset
+  facet_grid(cols = vars(offset), labeller = labeller(offset = offset.labs)) +
+  # plot the mean responses w/CI
+  stat_summary(fun = "mean", geom = "bar", alpha = 0.5) +
+  stat_summary(fun.data = "mean_cl_boot", geom = "linerange", 
+               size = 1.25, color = "black") +
+  # titles and scales
+  ggtitle("Number of Signals Grouped by Offset") +
+  scale_y_continuous(name = "Causal Response",
+                     breaks = seq(1, 9, by = 1)) + 
+  coord_cartesian(ylim=c(1,9)) +
+  xlab("Number of Signals") +
+  labs(color = "# of Signals") +
+  theme(aspect.ratio = 1.75, legend.position = "none",
+        plot.title = element_text(hjust = 0.5)) 
+
+# Realism
+realism.plot = ggplot(data = responses.df %>% 
+           mutate(realism = factor(realism, levels = c("unreal", "real"))), 
+         mapping = aes(x = factor(realism), y = response,
+                       color = factor(realism),
+                       fill = factor(realism))) + 
+  # color
+  scale_colour_manual(values = realismPalette, 
+                      labels = c("Realistic", "Unrealistic")) +
+  scale_fill_manual(values = realismPalette) +
+  # facet by offset
+  facet_grid(cols = vars(offset), labeller = labeller(offset = offset.labs)) +
+  # plot the mean responses w/CI
+  stat_summary(fun = "mean", geom = "bar", alpha = 0.5) +
+  stat_summary(fun.data = "mean_cl_boot", geom = "linerange", 
+               size = 1.25, color = "black") +
+  # titles and scales
+  ggtitle("Realism Grouped by Offset") +
+  scale_y_continuous(name = "Causal Response",
+                     breaks = seq(1, 9, by = 1)) + 
+  coord_cartesian(ylim=c(1,9)) +
+  scale_x_discrete(labels=c('Unreal', 'Real')) +
+  xlab("Realism") +
+  theme(aspect.ratio = 1.75, legend.position = "none",
+        plot.title = element_text(hjust = 0.5)) 
+
+# Exploratory
+exploratory.plot = ggplot(data = responses.df, 
+                          mapping = aes(x = audio, y = response, 
+                                        fill = vibration, color = vibration)) + 
+  # color
+  scale_colour_manual(values = explorePalette, 
+                      labels = c("None", "Unreal", "Real")) +
+  scale_fill_manual(values = explorePalette)  +
+  # facet by vision: unrealistic and realistic
+  facet_grid(cols = vars(vision), labeller = labeller(vision = vision.labs)) +
+  # plot the mean responses w/CI
+  stat_summary(fun = "mean", geom = "bar", alpha = 0.5, size = .5,
+               position = position_dodge(width = 0.95)) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "linerange", size = 1.25, alpha = 1, color = "black",
+               position = position_dodge(width = 0.95)) +
+  # titles and scales
+  ggtitle("Audio & Vibration Grouped by Vision") +
+  scale_y_continuous(name = "Causal Response",
+                     breaks = seq(1, 9, by = 1)) + 
+  coord_cartesian(ylim=c(1,9)) +
+  xlab("Audio") +
+  scale_x_discrete(labels=c('None','Unreal', 'Real')) +
+  labs(fill = "Vibration", color = "Vibration") +
+  theme(aspect.ratio = 0.75,
+        plot.title = element_text(hjust = 0.5))
+  
+# display graphs
+signal.plot
+realism.plot
+exploratory.plot
+```
